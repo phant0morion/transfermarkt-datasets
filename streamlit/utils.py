@@ -26,7 +26,7 @@ def load_td() -> Dataset:
     st.write("Running on Streamlit Cloud (or equivalent forced mode), attempting to pull data with DVC...")
     try:
         cmd = ["dvc", "pull", "data/prep", "-v"]
-        st.write(f"Executing: {\' \'.join(cmd)}")
+        st.write(f"Executing: {' '.join(cmd)}")
 
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
