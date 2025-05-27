@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import base64
 import sys
 import subprocess
+from transfermarkt_datasets.core.dataset import Dataset
 
 @st.cache_data
 def load_td() -> Dataset:
