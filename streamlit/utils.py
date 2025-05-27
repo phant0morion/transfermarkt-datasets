@@ -12,6 +12,24 @@ import subprocess
 from transfermarkt_datasets.core.dataset import Dataset
 from transfermarkt_datasets.core.asset import Asset
 
+MAX_OUTPUT_LINES = 50
+MAX_LINE_LENGTH = 200
+
+def truncate_output(output: str, max_lines: int, max_line_len: int) -> str:
+    if not output:
+        return ""
+    lines = output.splitlines()
+    truncated_lines = []
+    for i, line in enumerate(lines):
+        if i >= max_lines:
+            truncated_lines.append(f"... (truncated - too many lines, total {len(lines)})")
+            break
+        if len(line) > max_line_len:
+            truncated_lines.append(line[:max_line_len] + f"... (truncated - line too long, original length {len(line)})")
+        else:
+            truncated_lines.append(line)
+    return "\\n".join(truncated_lines)
+
 @st.cache_data
 def load_td() -> Dataset:
     """Instantiate and initialise a Dataset, so it can be used in the app.
@@ -32,8 +50,11 @@ def load_td() -> Dataset:
 
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
-        st.write(f"DVC pull stdout:\\n```\\n{result.stdout}\\n```")
-        st.write(f"DVC pull stderr:\\n```\\n{result.stderr}\\n```")
+        dvc_stdout_display = truncate_output(result.stdout, MAX_OUTPUT_LINES, MAX_LINE_LENGTH)
+        dvc_stderr_display = truncate_output(result.stderr, MAX_OUTPUT_LINES, MAX_LINE_LENGTH)
+
+        st.write(f"DVC pull stdout:\\n```\\n{dvc_stdout_display}\\n```")
+        st.write(f"DVC pull stderr:\\n```\\n{dvc_stderr_display}\\n```")
 
         if result.returncode != 0:
             st.error(f"DVC pull failed with return code {result.returncode}.")
@@ -46,13 +67,19 @@ def load_td() -> Dataset:
             ls_data_cmd = ["ls", "-l", "data/"]
             st.write(f"Executing: {' '.join(ls_data_cmd)}")
             ls_data_result = subprocess.run(ls_data_cmd, capture_output=True, text=True, cwd="/workspaces/transfermarkt-datasets")
-            # The problematic line was here, ensure it's correctly formatted
-            st.write(f"Contents of 'data/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_data_cmd)}\\n{ls_data_result.stdout}\\n{ls_data_result.stderr}\\n```")
+            
+            ls_data_stdout_display = truncate_output(ls_data_result.stdout, 20, MAX_LINE_LENGTH)
+            ls_data_stderr_display = truncate_output(ls_data_result.stderr, 20, MAX_LINE_LENGTH)
+            st.write(f"Contents of 'data/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_data_cmd)}\\n{ls_data_stdout_display}\\n{ls_data_stderr_display}\\n```")
 
             # Debug: Print output of ls -l data/prep
             ls_prep_cmd = ["ls", "-l", "data/prep/"]
-            ls_prep_result = subprocess.run(ls_prep_cmd, capture_output=True, text=True)
-            st.write(f"Contents of 'data/prep/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_prep_cmd)}\\n{ls_prep_result.stdout}\\n{ls_prep_result.stderr}\\n```")
+            # Ensure cwd is specified for this call as well
+            ls_prep_result = subprocess.run(ls_prep_cmd, capture_output=True, text=True, cwd="/workspaces/transfermarkt-datasets")
+            
+            ls_prep_stdout_display = truncate_output(ls_prep_result.stdout, 20, MAX_LINE_LENGTH)
+            ls_prep_stderr_display = truncate_output(ls_prep_result.stderr, 20, MAX_LINE_LENGTH)
+            st.write(f"Contents of 'data/prep/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_prep_cmd)}\\n{ls_prep_stdout_display}\\n{ls_prep_stderr_display}\\n```")
         except Exception as e_ls:
             st.warning(f"Could not list directory contents: {e_ls}")
 
