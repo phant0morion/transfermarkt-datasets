@@ -1,6 +1,6 @@
 import json
 import pathlib
-from typing import Dict, List
+from typing import Dict, List, Union, Optional
 from pathlib import Path
 
 from frictionless.package import Package
@@ -35,7 +35,7 @@ class Dataset:
         config_file="config.yml",
         assets_root=".",
         assets_relative_path="transfermarkt_datasets/assets",
-        base_path: str | Path | None = None
+        base_path: Optional[Union[str, Path]] = None
     ) -> None:
 
         self.assets_root = assets_root
@@ -44,7 +44,7 @@ class Dataset:
         self.config = config or read_config(config_file)
 
         self.prep_folder_path = "data/prep"
-        self.assets = {}
+        self.assets: Dict[str, Asset] = {}
 
         if self.config.get("logging"):
           logging.config.dictConfig(self.config["logging"])
