@@ -38,15 +38,19 @@ def load_td() -> Dataset:
         else:
             st.success("DVC pull completed successfully.")
 
-        st.write("Checking contents of \'data/\' and \'data/prep/\' directories...")
+        st.write("Checking contents of 'data/' and 'data/prep/' directories...")
         try:
-            ls_data_cmd = ["ls", "-l", "data"]
-            ls_data_result = subprocess.run(ls_data_cmd, capture_output=True, text=True)
-            st.write(f"Contents of \'data/\' directory (after DVC attempt):\\n```\\n$ {\' \'.join(ls_data_cmd)}\\n{ls_data_result.stdout}\\n{ls_data_result.stderr}\\n```")
+            # Debug: Print output of ls -l data/
+            ls_data_cmd = ["ls", "-l", "data/"]
+            st.write(f"Executing: {' '.join(ls_data_cmd)}")
+            ls_data_result = subprocess.run(ls_data_cmd, capture_output=True, text=True, cwd="/workspaces/transfermarkt-datasets")
+            # The problematic line was here, ensure it's correctly formatted
+            st.write(f"Contents of 'data/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_data_cmd)}\\n{ls_data_result.stdout}\\n{ls_data_result.stderr}\\n```")
 
-            ls_prep_cmd = ["ls", "-l", "data/prep"]
+            # Debug: Print output of ls -l data/prep
+            ls_prep_cmd = ["ls", "-l", "data/prep/"]
             ls_prep_result = subprocess.run(ls_prep_cmd, capture_output=True, text=True)
-            st.write(f"Contents of \'data/prep/\' directory (after DVC attempt):\\n```\\n$ {\' \'.join(ls_prep_cmd)}\\n{ls_prep_result.stdout}\\n{ls_prep_result.stderr}\\n```")
+            st.write(f"Contents of 'data/prep/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_prep_cmd)}\\n{ls_prep_result.stdout}\\n{ls_prep_result.stderr}\\n```")
         except Exception as e_ls:
             st.warning(f"Could not list directory contents: {e_ls}")
 
