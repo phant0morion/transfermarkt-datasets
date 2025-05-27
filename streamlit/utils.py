@@ -24,7 +24,7 @@ def load_td() -> Dataset:
         Dataset: A transfermark_datasets.core.Dataset that is initialised and ready to be used.
     """
 
-    if os.environ["STREAMLIT"] == "cloud":
+    if os.getenv("STREAMLIT") == "cloud":
         os.system("dvc pull data/prep")
 
     td = Dataset()
