@@ -91,8 +91,12 @@ def load_td() -> Dataset:
     # else: # Corresponds to the temporarily bypassed if
     #     st.write("DEBUG: Not on Streamlit Cloud (or condition not met), skipping DVC pull.")
 
+    # Determine the project root directory, assuming utils.py is in streamlit/
+    # and the project root is one level up from the directory containing utils.py.
+    project_root = Path(__file__).parent.parent.resolve()
+    st.write(f"DEBUG: Determined project_root for Dataset: {project_root}")
 
-    td = Dataset()
+    td = Dataset(base_path=project_root)
     td.load_assets()
 
     return td
