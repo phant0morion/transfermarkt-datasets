@@ -10,6 +10,7 @@ import base64
 import sys
 import subprocess
 from transfermarkt_datasets.core.dataset import Dataset
+from transfermarkt_datasets.core.asset import Asset
 
 @st.cache_data
 def load_td() -> Dataset:
