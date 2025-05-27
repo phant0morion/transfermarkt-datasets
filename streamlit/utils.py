@@ -8,7 +8,7 @@ from inflection import dasherize, titleize
 from datetime import datetime, timedelta
 import base64
 import sys
-import subprocess # Added import
+import subprocess
 
 cwd = os.getcwd()
 sys.path.insert(0, cwd)
@@ -23,43 +23,47 @@ def load_td() -> Dataset:
     Returns:
         Dataset: A transfermark_datasets.core.Dataset that is initialised and ready to be used.
     """
+    st.write(f"DEBUG: os.getenv(\\"STREAMLIT\\"): {os.getenv(\\"STREAMLIT\\")}")
+    st.write(f"DEBUG: os.getenv(\\"STREAMLIT_SERVER_MODE\\"): {os.getenv(\\"STREAMLIT_SERVER_MODE\\")}")
 
-    if os.getenv("STREAMLIT") == "cloud":
-        st.write("Running on Streamlit Cloud, attempting to pull data with DVC...")
+    # Temporarily bypass the condition to force DVC pull for debugging
+    # if os.getenv("STREAMLIT") == "cloud":
+    st.write("DEBUG: Attempting DVC pull (condition temporarily bypassed for debugging)")
+    st.write("Running on Streamlit Cloud (or equivalent forced mode), attempting to pull data with DVC...")
+    try:
+        cmd = ["dvc", "pull", "data/prep", "-v"]
+        st.write(f"Executing: {\' \'.join(cmd)}")
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+        st.write(f"DVC pull stdout:\\n```\\n{result.stdout}\\n```")
+        st.write(f"DVC pull stderr:\\n```\\n{result.stderr}\\n```")
+
+        if result.returncode != 0:
+            st.error(f"DVC pull failed with return code {result.returncode}.")
+        else:
+            st.success("DVC pull completed successfully.")
+
+        st.write("Checking contents of \'data/\' and \'data/prep/\' directories...")
         try:
-            cmd = ["dvc", "pull", "data/prep", "-v"] # Added -v for verbosity
-            st.write(f"Executing: {' '.join(cmd)}")
+            ls_data_cmd = ["ls", "-l", "data"]
+            ls_data_result = subprocess.run(ls_data_cmd, capture_output=True, text=True)
+            st.write(f"Contents of \'data/\' directory (after DVC attempt):\\n```\\n$ {\' \'.join(ls_data_cmd)}\\n{ls_data_result.stdout}\\n{ls_data_result.stderr}\\n```")
 
-            # Execute the command
-            # Assumes the CWD is the project root, which is typical for Streamlit Cloud.
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            ls_prep_cmd = ["ls", "-l", "data/prep"]
+            ls_prep_result = subprocess.run(ls_prep_cmd, capture_output=True, text=True)
+            st.write(f"Contents of \'data/prep/\' directory (after DVC attempt):\\n```\\n$ {\' \'.join(ls_prep_cmd)}\\n{ls_prep_result.stdout}\\n{ls_prep_result.stderr}\\n```")
+        except Exception as e_ls:
+            st.warning(f"Could not list directory contents: {e_ls}")
 
-            st.write(f"DVC pull stdout:\\n```\\n{result.stdout}\\n```")
-            st.write(f"DVC pull stderr:\\n```\\n{result.stderr}\\n```")
+    except FileNotFoundError:
+        st.error("DVC command not found. Ensure DVC is installed in the Streamlit Cloud environment and added to your project's dependencies (e.g., pyproject.toml).")
+    except Exception as e:
+        st.error(f"An error occurred during DVC pull setup or execution: {e}")
+        print(f"Error during DVC pull: {e}") # Also print to server logs
+    # else: # Corresponds to the temporarily bypassed if
+    #     st.write("DEBUG: Not on Streamlit Cloud (or condition not met), skipping DVC pull.")
 
-            if result.returncode != 0:
-                st.error(f"DVC pull failed with return code {result.returncode}.")
-            else:
-                st.success("DVC pull completed successfully.")
-
-            # List directory contents to see what's there, regardless of DVC success/failure for diagnostics
-            st.write("Checking contents of 'data/' and 'data/prep/' directories...")
-            try:
-                ls_data_cmd = ["ls", "-l", "data"]
-                ls_data_result = subprocess.run(ls_data_cmd, capture_output=True, text=True)
-                st.write(f"Contents of 'data/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_data_cmd)}\\n{ls_data_result.stdout}\\n{ls_data_result.stderr}\\n```")
-
-                ls_prep_cmd = ["ls", "-l", "data/prep"]
-                ls_prep_result = subprocess.run(ls_prep_cmd, capture_output=True, text=True)
-                st.write(f"Contents of 'data/prep/' directory (after DVC attempt):\\n```\\n$ {' '.join(ls_prep_cmd)}\\n{ls_prep_result.stdout}\\n{ls_prep_result.stderr}\\n```")
-            except Exception as e_ls:
-                st.warning(f"Could not list directory contents: {e_ls}")
-
-        except FileNotFoundError:
-            st.error("DVC command not found. Ensure DVC is installed in the Streamlit Cloud environment and added to your project's dependencies (e.g., pyproject.toml).")
-        except Exception as e:
-            st.error(f"An error occurred during DVC pull setup or execution: {e}")
-            print(f"Error during DVC pull: {e}") # Also print to server logs
 
     td = Dataset()
     td.load_assets()
