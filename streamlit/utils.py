@@ -10,12 +10,6 @@ import base64
 import sys
 import subprocess
 
-cwd = os.getcwd()
-sys.path.insert(0, cwd)
-
-from transfermarkt_datasets.core.dataset import Dataset
-from transfermarkt_datasets.core.asset import Asset
-
 @st.cache_data
 def load_td() -> Dataset:
     """Instantiate and initialise a Dataset, so it can be used in the app.
@@ -23,8 +17,8 @@ def load_td() -> Dataset:
     Returns:
         Dataset: A transfermark_datasets.core.Dataset that is initialised and ready to be used.
     """
-    st.write(f"DEBUG: os.getenv(\\"STREAMLIT\\"): {os.getenv(\\"STREAMLIT\\")}")
-    st.write(f"DEBUG: os.getenv(\\"STREAMLIT_SERVER_MODE\\"): {os.getenv(\\"STREAMLIT_SERVER_MODE\\")}")
+    st.write(f"DEBUG: os.getenv('STREAMLIT'): {os.getenv('STREAMLIT')}")
+    st.write(f"DEBUG: os.getenv('STREAMLIT_SERVER_MODE'): {os.getenv('STREAMLIT_SERVER_MODE')}")
 
     # Temporarily bypass the condition to force DVC pull for debugging
     # if os.getenv("STREAMLIT") == "cloud":
