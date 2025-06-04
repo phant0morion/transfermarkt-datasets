@@ -8,31 +8,17 @@ from io import BytesIO
 from datetime import datetime, date 
 from pathlib import Path
 
-# CRITICAL: Health check detection BEFORE page config
-try:
-    # Check query parameters for health checks - immediate response
-    query_params = st.query_params if hasattr(st, 'query_params') else {}
-    if query_params:
-        query_str = str(query_params).lower()
-        if any(check in query_str for check in ['health', 'check', 'script-health-check', 'healthz']):
-            st.write("OK")
-            st.stop()
-    
-    # Check environment for cloud health checks (SIMPLIFIED for reliability)
-    if os.environ.get('STREAMLIT_SERVER_HEADLESS', '').lower() == 'true':
-        # Quick check for health endpoints in URL
-        if len(sys.argv) > 0 and any(health_term in str(sys.argv).lower() for health_term in ['health', 'check']):
-            st.set_page_config(page_title="Health Check", page_icon="✅", layout="centered")
-            st.write("OK")
-            st.stop()
-        
-except Exception:
-    # Failsafe: always respond to potential health checks
-    st.write("OK")
-    st.stop()
-
 # --- PAGE CONFIGURATION (MUST BE THE FIRST STREAMLIT COMMAND) ---
 st.set_page_config(page_title="Transfermarkt Database", page_icon="⚽", layout="wide")
+
+# Simple health check response
+try:
+    query_params = st.query_params if hasattr(st, 'query_params') else {}
+    if query_params and any(check in str(query_params).lower() for check in ['health', 'check']):
+        st.write("OK")
+        st.stop()
+except:
+    pass
 
 # --- Add parent directory to sys.path to find utils.py ---
 try:
