@@ -26,12 +26,19 @@ class Asset:
 
   def __init__(
     self,
-    settings: dict = None) -> None:
+    settings: dict = None,
+    base_path: str = None) -> None:
 
       self._prep_df = None
       self.settings = settings
       self.log = logging.getLogger("main")
-      self.prep_location = "data/prep"
+      
+      # Use base_path if provided, otherwise use relative path (for backward compatibility)
+      if base_path:
+          self.prep_location = f"{base_path}/data/prep"
+      else:
+          self.prep_location = "data/prep"
+          
       self.datapackage_descriptor_path = f"{self.prep_location}/dataset-metadata.json"
 
       if not self.file_name:

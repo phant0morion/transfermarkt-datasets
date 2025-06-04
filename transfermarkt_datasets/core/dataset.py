@@ -1,9 +1,11 @@
 import json
 import pathlib
-from typing import Dict, List, Union, Optional
+from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
+from frictionless import Package
+import sys
 
-from frictionless.package import Package
+from transfermarkt_datasets.core.asset import Asset
 
 import importlib
 import inflection
@@ -35,7 +37,8 @@ class Dataset:
         config_file="config.yml",
         assets_root=".",
         assets_relative_path="transfermarkt_datasets/assets",
-        base_path: Optional[Union[str, Path]] = None
+        base_path: Optional[Union[str, Path]] = None,
+        catalog_path: Optional[str] = None
     ) -> None:
 
         self.assets_root = assets_root
@@ -55,6 +58,8 @@ class Dataset:
 
         for file in pathlib.Path(os.path.join(self.assets_root, self.assets_relative_path)).glob("**/*.py"):
           filename = file.name
+          if filename.startswith("__"):  # Skip __init__.py and other dunder files
+              continue
           class_ = self.get_asset_def(filename.split(".")[0])
           asset = class_()
           self.assets[asset.name] = asset
@@ -62,12 +67,18 @@ class Dataset:
         if base_path:
             self.base_path = Path(base_path).resolve()
         else:
-            # Default to current working directory's resolved path if not provided.
-            # This might not always be the project root, so providing base_path is safer.
-            self.base_path = Path(".").resolve()
-        
-        # For server-side logging to understand the context
-        print(f"INFO: transfermarkt_datasets.core.Dataset initialized with base_path: {self.base_path}")
+            # default: resolve from this file's directory
+            # core -> transfermarkt_datasets -> project root
+            self.base_path = Path(__file__).parent.parent.parent.resolve()
+            
+        # Update asset paths to use the correct base_path
+        self._update_asset_paths()
+
+    def _update_asset_paths(self):
+        """Update all assets to use the correct base path for their prep_location."""
+        prep_path = str(self.base_path / self.prep_folder_path)
+        for asset in self.assets.values():
+            asset.prep_location = prep_path
 
     @property
     def assets_module(self):
@@ -88,6 +99,11 @@ class Dataset:
       for asset_name, asset in self.assets.items():
         if asset.public:
           asset.load_from_prep()
+
+    def _update_asset_paths(self):
+      """Update all asset paths to use the correct base_path."""
+      for asset in self.assets.values():
+          asset.prep_location = f"{self.base_path}/data/prep"
 
     def get_asset_def(self, asset_name):
       class_name = inflection.camelize(asset_name) + "Asset"

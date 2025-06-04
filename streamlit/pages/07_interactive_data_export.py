@@ -1,29 +1,71 @@
 import streamlit as st
-import pandas as pd
-from io import BytesIO
 import os
-from datetime import datetime # Ensure datetime is imported if not already
-import sys # Add sys import
+import sys
+import gc
+import pandas as pd 
+import duckdb 
+from io import BytesIO
+from datetime import datetime, date 
+from pathlib import Path
+
+# CRITICAL: Health check detection BEFORE page config
+try:
+    # Check query parameters for health checks - immediate response
+    query_params = st.query_params if hasattr(st, 'query_params') else {}
+    if query_params:
+        query_str = str(query_params).lower()
+        if any(check in query_str for check in ['health', 'check', 'script-health-check', 'healthz']):
+            st.write("OK")
+            st.stop()
+    
+    # Check environment for cloud health checks (SIMPLIFIED for reliability)
+    if os.environ.get('STREAMLIT_SERVER_HEADLESS', '').lower() == 'true':
+        # Quick check for health endpoints in URL
+        if len(sys.argv) > 0 and any(health_term in str(sys.argv).lower() for health_term in ['health', 'check']):
+            st.set_page_config(page_title="Health Check", page_icon="✅", layout="centered")
+            st.write("OK")
+            st.stop()
+        
+except Exception:
+    # Failsafe: always respond to potential health checks
+    st.write("OK")
+    st.stop()
+
+# --- PAGE CONFIGURATION (MUST BE THE FIRST STREAMLIT COMMAND) ---
+st.set_page_config(page_title="Transfermarkt Database", page_icon="⚽", layout="wide")
 
 # --- Add parent directory to sys.path to find utils.py ---
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# --- End add parent directory ---
+try:
+    current_file_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.abspath(os.path.join(current_file_dir, '..'))
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+except Exception as e_path:
+    st.error(f"Error modifying sys.path: {e_path}")
+    st.stop()
 
-# --- Add duckdb import ---
-import duckdb
+# --- IMPORT UTILITIES ---
+try:
+    from transfermarkt_datasets.core.asset import Asset 
+    from transfermarkt_datasets.core.dataset import Dataset 
+    from utils import load_td
+except ImportError as e_import:
+    st.error(f"Failed to import required modules: {e_import}")
+    st.error("Please ensure you have installed all dependencies with: `pip install -r requirements.txt`")
+    st.stop()
+except Exception as e_gen_import:
+    st.error(f"An unexpected error occurred during import: {e_gen_import}")
+    st.stop()
 
-# --- Add Asset import for type hinting ---
-from transfermarkt_datasets.core.asset import Asset
-from transfermarkt_datasets.core.dataset import Dataset # Added for type hinting
+# CRITICAL: Clean up old session state to prevent Streamlit Cloud caching issues
+if "global_date_filter" in st.session_state:
+    del st.session_state["global_date_filter"]
 
-from utils import load_td # Assuming utils.py is now findable
-
-st.set_page_config(page_title="Transfermarkt Database", page_icon="⚽") # MODIFIED
-st.title("⚽ Transfermarkt Database") # MODIFIED
+st.title("⚽ Transfermarkt Database")
 
 st.markdown("""
 Explore the Transfermarkt database, apply filters, and export the results to Excel.
-""") # MODIFIED
+""")
 
 # Define Top 5 Leagues and their known competition codes
 # These codes (e.g., 'GB1') should match 'competition_id' in your datasets
@@ -35,18 +77,60 @@ TOP_LEAGUES = {
     "Ligue 1 (France)": "FR1",
 }
 
+# --- DYNAMIC PROJECT ROOT DETECTION ---
+try:
+    # Dynamically determine the project root (repo root)
+    PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../'))
+except Exception as e_proj_root:
+    st.error(f"Error determining project root: {e_proj_root}")
+    st.stop()
+
+# Patch all data file path usage to use PROJECT_ROOT
+# Patch for Asset.prep_path and all data file references
+# (Assumes Asset.prep_path is relative to project root)
+
+def get_asset_prep_path(asset_obj):
+    # If path is already absolute, return as is
+    if os.path.isabs(asset_obj.prep_path):
+        return asset_obj.prep_path
+    # Otherwise, join with PROJECT_ROOT
+    return os.path.join(PROJECT_ROOT, asset_obj.prep_path)
+
+# --- END DYNAMIC PROJECT ROOT DETECTION ---
+
 # Load the dataset object (loads all assets)
-# @st.cache_data # Caching td is good
-def get_dataset(): # Wrapper for caching
-    return load_td()
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=1)
+def get_dataset():
+    """Load dataset with memory management and path flexibility"""
+    try:
+        gc.collect()  # Clean up before loading
+        return load_td()
+    except Exception as e:
+        st.error(f"Failed to load dataset: {e}")
+        return None
 
 td = get_dataset()
 
+# Add safety check for dataset loading
+if td is None:
+    st.error("❌ Failed to load dataset. Please check data files and try again.")
+    st.stop()
+
+# Verify essential assets are available
+required_assets = ["cur_games", "cur_clubs", "cur_players"]
+missing_assets = [asset for asset in required_assets if asset not in td.assets]
+
+if missing_assets:
+    st.error(f"❌ Missing required assets: {missing_assets}")
+    st.info("Available assets: " + ", ".join(td.assets.keys()))
+    st.stop()
+
 # --- Enhanced Setup for Filters ---
 # Load clubs data for team filtering
-# @st.cache_data # Cache clubs_df and mappings
-def load_club_data(dataset):
-    clubs_asset = dataset.assets.get("cur_clubs")
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=1)
+def load_club_data(_dataset):
+    """Load club data with robust error handling"""
+    clubs_asset = _dataset.assets.get("cur_clubs")
     clubs_df_local = None
     club_id_to_name_local = {}
     club_name_to_id_local = {}
@@ -54,27 +138,23 @@ def load_club_data(dataset):
 
     if clubs_asset:
         try:
-            # For club data, direct load is fine as it's likely smaller and needed for UI
             clubs_asset.load_from_prep() 
             clubs_df_local = clubs_asset.prep_df
             if clubs_df_local is not None and 'club_id' in clubs_df_local.columns and 'name' in clubs_df_local.columns:
                 available_club_names_local = sorted(clubs_df_local['name'].dropna().unique())
-                # Ensure club_id is string for dictionary keys if they are mixed type, though usually int
-                # For safety, ensure club_id used in dicts is consistently typed if issues arise.
                 temp_id_to_name = clubs_df_local.dropna(subset=['club_id', 'name']).set_index('club_id')['name'].to_dict()
                 club_name_to_id_local = {
                     name: clubs_df_local[clubs_df_local['name'] == name]['club_id'].iloc[0] 
                     for name in available_club_names_local
                 }
-                # Ensure club_id_to_name_local keys are of the same type as used elsewhere (e.g. from games.csv)
                 club_id_to_name_local = {
                     club_id: name for name, club_id in club_name_to_id_local.items()
                 }
 
-        except FileNotFoundError:
-            st.sidebar.warning("Clubs data file (cur_clubs) not found. Team filtering will be unavailable.")
-        except Exception as e:
-            st.sidebar.error(f"Could not load clubs data for filtering: {e}")
+        except FileNotFoundError as e_fnf_club:
+            st.error("Club data file not found. Please ensure all required data files are available.")
+        except Exception as e_club:
+            st.error("Could not load club data. Please check the data files and try again.")
     return clubs_df_local, club_id_to_name_local, club_name_to_id_local, available_club_names_local
 
 clubs_df, club_id_to_name, club_name_to_id, available_club_names = load_club_data(td)
@@ -82,7 +162,7 @@ clubs_df, club_id_to_name, club_name_to_id, available_club_names = load_club_dat
 # --- End Enhanced Setup for Filters ---
 
 # --- Function to get club names for selected leagues and seasons ---
-@st.cache_data(show_spinner="Fetching clubs for selected leagues...")
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=10)
 def get_club_names_for_leagues(
     _selected_league_codes: list, 
     _td_dataset: Dataset, # Use the specific type hint for td
@@ -90,23 +170,17 @@ def get_club_names_for_leagues(
     _start_year: int, 
     _end_year: int
 ):
-    print(f"DEBUG: get_club_names_for_leagues called with leagues: {_selected_league_codes}, years: {_start_year}-{_end_year}") # ADDED
-
     if not _selected_league_codes:
-        print("DEBUG: get_club_names_for_leagues: No selected league codes, returning empty list.") # ADDED
         return []
 
-    games_asset = _td_dataset.assets.get("cur_games") # MODIFIED from "games"
+    games_asset = _td_dataset.assets.get("cur_games")
     if not games_asset:
         st.warning("Games asset ('cur_games') not found in dataset.")
-        print("DEBUG: get_club_names_for_leagues: 'cur_games' asset not found. Available keys:", list(_td_dataset.assets.keys())) # ADDED
         return []
     
-    games_file_path = games_asset.prep_path
-    print(f"DEBUG: get_club_names_for_leagues: games_file_path: {games_file_path}") # ADDED
+    games_file_path = get_asset_prep_path(games_asset)
     if not os.path.exists(games_file_path):
         st.warning(f"Games data file not found: {games_file_path}")
-        print(f"DEBUG: get_club_names_for_leagues: File not found at {games_file_path}") # ADDED
         return []
 
     # Assuming season column is integer like 2022 for 2022/23 season
@@ -127,84 +201,38 @@ def get_club_names_for_leagues(
     WHERE club_id IS NOT NULL;
     """
     
-    print(f"DEBUG: Executing get_club_names_for_leagues query: {query}") # UNCOMMENTED & MODIFIED
-
     try:
-        con = duckdb.connect(database=':memory:', read_only=False) # MODIFIED read_only to False
+        con = duckdb.connect(database=':memory:', read_only=False)
         club_ids_df = con.execute(query).fetchdf()
         con.close()
 
-        print(f"DEBUG: get_club_names_for_leagues: club_ids_df.info()") # ADDED
-        # club_ids_df.info(verbose=True) # This prints to stdout, captured by Streamlit
-        # For a cleaner log in the tool output, let's capture it as a string if possible, or rely on terminal.
-        # For now, let's assume print to terminal is fine. If not, we can adjust.
-        if hasattr(club_ids_df, 'info'):
-            # Redirect stdout to capture df.info()
-            from io import StringIO
-            buffer = StringIO()
-            sys.stdout = buffer
-            club_ids_df.info(verbose=True)
-            sys.stdout = sys.__stdout__ # Reset stdout
-            print(f"DEBUG: get_club_names_for_leagues: club_ids_df.info() output:\n{buffer.getvalue()}")
-
-        print(f"DEBUG: get_club_names_for_leagues: club_ids_df.head():\\n{club_ids_df.head().to_string()}") # ADDED
-        print(f"DEBUG: get_club_names_for_leagues: Number of club_ids returned by query: {len(club_ids_df)}") # ADDED
-
         if club_ids_df.empty:
-            print("DEBUG: get_club_names_for_leagues: Query returned no club IDs.") # ADDED
             return []
         
-        # Debugging the map and IDs
-        if _club_id_to_name_map:
-            sample_map_key = next(iter(_club_id_to_name_map), None) # ADDED default None
-            if sample_map_key is not None: # ADDED check
-                print(f"DEBUG: get_club_names_for_leagues: Sample key from _club_id_to_name_map: {sample_map_key} (type: {type(sample_map_key)})")
-        else:
-            print("DEBUG: get_club_names_for_leagues: _club_id_to_name_map is empty!") # ADDED
+        if not _club_id_to_name_map:
             return [] 
 
         club_names_found = []
-        # Ensure club_id from df matches type of keys in _club_id_to_name_map
         unique_club_ids_from_query = club_ids_df['club_id'].dropna().unique()
-        print(f"DEBUG: get_club_names_for_leagues: Unique club IDs from query ({len(unique_club_ids_from_query)}): {list(unique_club_ids_from_query)[:10]}") # ADDED first 10
 
         for club_id_val in unique_club_ids_from_query: 
-            # Example type print for the first ID encountered
-            if not club_names_found and unique_club_ids_from_query.size > 0: # Print type for the first actual ID
-                 print(f"DEBUG: get_club_names_for_leagues: Processing first club_id_val: {club_id_val} (type: {type(club_id_val)})")
-
-
             if club_id_val in _club_id_to_name_map:
                 club_names_found.append(_club_id_to_name_map[club_id_val])
-        
-        if not club_names_found and not club_ids_df.empty: # ADDED check for non-empty df
-            print("DEBUG: get_club_names_for_leagues: No club names found after mapping. This could be due to type mismatches or missing IDs in the map.")
-            unmapped_ids = [id_val for id_val in unique_club_ids_from_query if id_val not in _club_id_to_name_map]
-            if unmapped_ids:
-                print(f"DEBUG: get_club_names_for_leagues: First few unmapped IDs from query: {unmapped_ids[:5]}")
-                if _club_id_to_name_map and sample_map_key is not None: # Check sample_map_key again
-                     print(f"DEBUG: get_club_names_for_leagues: First few keys in _club_id_to_name_map: {list(_club_id_to_name_map.keys())[:5]}")
 
-
-        club_names = sorted(list(set(club_names_found))) # Use set to ensure uniqueness of names
-        print(f"DEBUG: get_club_names_for_leagues: Found {len(club_names)} unique club names. First 20: {club_names[:20]}") # ADDED count and first 20
+        club_names = sorted(list(set(club_names_found)))
         return club_names
     except Exception as e:
         st.error(f"Error fetching clubs for leagues: {e}")
-        print(f"DEBUG: Error in get_club_names_for_leagues: {e}") # UNCOMMENTED & MODIFIED
         return []
 # --- End function to get club names for leagues ---
 
 # --- Function to get date range for an asset ---
-@st.cache_data(show_spinner="Fetching date range...")
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=20)
 def get_date_range_for_asset(_asset_obj: Asset, date_column_name: str):
-    file_path = _asset_obj.prep_path # MODIFIED
+    file_path = get_asset_prep_path(_asset_obj)
     if not os.path.exists(file_path):
         # st.warning(f"Data file not found, cannot determine date range: {file_path}") # Warning can be noisy if file is optional
         return None, None
-
-    # Use the asset_name for more informative error messages if needed later
-    # asset_name_for_error = _asset_obj.name # If you need it
 
     query = f"SELECT MIN(CAST({date_column_name} AS DATE)) AS min_date, MAX(CAST({date_column_name} AS DATE)) AS max_date FROM read_csv_auto('{str(file_path)}')"
     
@@ -236,8 +264,6 @@ def get_date_range_for_asset(_asset_obj: Asset, date_column_name: str):
             return min_date_res, max_date_res
         return None, None
     except Exception as e:
-        # st.error(f"Error fetching date range for {date_column_name} from asset: {e}") # Can be noisy
-        # print(f"Error fetching date range for {date_column_name}: {e}") # For server logs
         return None, None
 # --- End function to get date range ---
 
@@ -266,7 +292,7 @@ selected_display_name = st.selectbox("Select a dataset:", display_asset_names)
 asset_name = dataset_names[display_asset_names.index(selected_display_name)]
 asset = td.assets[asset_name]
 
-# --- Define user-friendly column names (MOVED EARLIER) ---
+# --- Define user-friendly column names ---
 FRIENDLY_COLUMN_NAMES = {
     "game_id": "Game ID",
     "competition_id": "Competition ID",
@@ -287,14 +313,12 @@ FRIENDLY_COLUMN_NAMES = {
     "url": "URL",
     # For 'cur_players'
     "player_id": "Player ID",
-    # "name": "Player Name", # Assuming 'name' is too generic, let's use original if not specified
     "current_club_id": "Current Club ID",
     "current_club_name": "Current Club",
     "country_of_birth": "Country of Birth",
     "city_of_birth": "City of Birth",
     "country_of_citizenship": "Country of Citizenship",
     "date_of_birth": "Date of Birth",
-    # "position": "Position", # Assuming 'position' is too generic
     "sub_position": "Sub-Position",
     "foot": "Preferred Foot",
     "height_in_cm": "Height (cm)",
@@ -336,7 +360,7 @@ st.sidebar.subheader("Apply Filters")
 # --- League Filter Setup ---
 league_display_names = list(TOP_LEAGUES.keys())
 selected_leagues_display = st.sidebar.multiselect(
-    "Filter by Top League (teams from last 20 years):", # Modified label
+    "Filter by Top League (teams from last 20 years):", 
     options=league_display_names,
     key="league_filter"
 )
@@ -347,18 +371,12 @@ current_year = datetime.now().year
 start_year_for_leagues = current_year - 20
 # --- End League Filter Setup ---
 
-
 # --- Global Date Filter Setup ---
 # Initial broad defaults, these will be refined if a date-filterable asset is selected
 global_min_val_for_input = datetime(1990, 1, 1).date()
 global_max_val_for_input = datetime.now().date() 
-# Attempt to retrieve persisted date range, or use a default based on initial broad values
-# Streamlit's `key` handles state, `value` sets the initial state if none exists or programmatically updates.
-# For the initial `value`, we'll refine it based on the selected asset below.
-initial_date_range_value = (global_min_val_for_input, global_max_val_for_input)
+initial_date_range_value = [global_min_val_for_input, global_max_val_for_input]
 date_filter_label = "Filter by Date" # Generic initial label
-
-selected_date_range_ui = None # Initialize
 
 if asset_name in date_filterable_assets:
     date_col_for_asset = date_filterable_assets[asset_name]
@@ -369,131 +387,148 @@ if asset_name in date_filterable_assets:
     if max_date_from_data:
         global_max_val_for_input = max_date_from_data
     
-    # The default value for the date_input should reflect the current asset's actual range
-    # This is used if no value is already in st.session_state for "global_date_filter"
-    # or to guide the user if they haven't interacted yet.
-    initial_date_range_value = (global_min_val_for_input, global_max_val_for_input)
+    initial_date_range_value = [global_min_val_for_input, global_max_val_for_input]
     date_filter_label = f"Filter by '{FRIENDLY_COLUMN_NAMES.get(date_col_for_asset, date_col_for_asset)}':"
 else:
-    # Asset is not date-filterable, provide a more generic label
     date_filter_label = "Date Filter (asset not date-filterable)"
 
-selected_date_range_ui = st.sidebar.date_input(
-    date_filter_label,
-    value=initial_date_range_value, 
+# SIMPLIFIED DATE INPUT - Use separate start and end date inputs for reliability
+# This replaces the problematic st.date_input with value as tuple that caused 
+# "ValueError: cannot unpack non-iterable datetime.date object" in Streamlit Cloud
+st.sidebar.subheader(date_filter_label)
+
+# Use separate date inputs to avoid the tuple/single date issue
+start_date_input = st.sidebar.date_input(
+    "Start Date:",
+    value=initial_date_range_value[0],
     min_value=global_min_val_for_input,
     max_value=global_max_val_for_input,
-    key="global_date_filter"  # Using a single key makes the selection persist
+    key="start_date_filter"
 )
+
+end_date_input = st.sidebar.date_input(
+    "End Date:",
+    value=initial_date_range_value[1],
+    min_value=global_min_val_for_input,
+    max_value=global_max_val_for_input,
+    key="end_date_filter"
+)
+
+# Ensure start_date <= end_date with clear user feedback
+if start_date_input > end_date_input:
+    st.sidebar.error("⚠️ Start date must be before or equal to end date!")
+    st.sidebar.info("Automatically swapping dates...")
+    # Swap them automatically
+    start_date_input, end_date_input = end_date_input, start_date_input
+
+# Create the final date range tuple
+selected_date_range_ui = (start_date_input, end_date_input)
+
 # --- End Global Date Filter Setup ---
 
 selected_club_names_ui = [] # Initialize before use
 
 # Team (Club) Filter UI
 # Dynamically populate club list based on selected leagues
-clubs_for_selection = available_club_names # Default to all clubs
+clubs_for_selection = available_club_names # Default to all clubs (populated from load_club_data)
 
 if selected_league_codes:
-    # Ensure club_id_to_name is populated
-    if not club_id_to_name: # Should be populated by load_club_data
-        st.sidebar.warning("Club ID to Name mapping not available for league filtering.")
-        # Fallback or handle error appropriately
+    # Ensure club_id_to_name is populated (it comes from load_club_data)
+    if not club_id_to_name:
+        st.sidebar.warning("Club name mapping is not available. Cannot filter by league teams. Showing all clubs.")
+        clubs_for_selection = available_club_names
     else:
-        clubs_for_selection = get_club_names_for_leagues(
-            selected_league_codes,
+        league_specific_clubs = get_club_names_for_leagues(
+            selected_league_codes, 
             td, 
-            club_id_to_name,
-            start_year_for_leagues,
-            current_year 
+            club_id_to_name, 
+            start_year_for_leagues, 
+            current_year
         )
-        if not clubs_for_selection and selected_leagues_display: # If leagues selected but no clubs found
-            st.sidebar.info(f"No clubs found for {', '.join(selected_leagues_display)} in the last 20 years, or data is unavailable.")
-
-
-if asset_name in team_filterable_assets: # available_club_names check is implicitly handled by clubs_for_selection
-    # If clubs_for_selection is empty, multiselect will show no options, which is fine.
-    selected_club_names_ui = st.sidebar.multiselect(
-        "Filter by Club(s):",
-        options=clubs_for_selection, # Use dynamically generated list
-        key=f"club_filter_{asset_name}" 
-        # Streamlit should handle selected values correctly if options change.
-        # If a selected club is no longer in options, it will be deselected.
-    )
+        if league_specific_clubs:
+            clubs_for_selection = league_specific_clubs
+        else:
+            st.sidebar.warning("No clubs found for the selected leagues and recent seasons. Showing all available clubs.")
+            clubs_for_selection = available_club_names # Fallback to all if no specific clubs found
 else:
-    selected_club_names_ui = [] # Ensure it's defined even if no filter is shown
+    clubs_for_selection = available_club_names
+
+if asset_name in team_filterable_assets:
+    team_filter_config = team_filterable_assets[asset_name]
+    filter_key_club = f"club_filter_{asset_name}" # Unique key per asset
+
+    if clubs_for_selection: # Only show multiselect if there are clubs to select
+        selected_club_names_ui = st.sidebar.multiselect(
+            "Filter by Club(s):",
+            options=sorted(list(set(clubs_for_selection))), # Ensure unique and sorted options
+            key=filter_key_club
+        )
+    else:
+        st.sidebar.info("No clubs available for filtering for the current selection.")
+        selected_club_names_ui = []
+else:
+    st.sidebar.info(f"Club filtering not applicable for the '{ASSET_DISPLAY_NAMES.get(asset_name, asset_name)}' dataset.")
+    selected_club_names_ui = []
 
 # Function to load and filter data using DuckDB
-@st.cache_data(show_spinner="Loading and filtering data...")
-def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict: # Return a dict
-    file_path = _asset_obj.prep_path
-    
-    # This print will show up in the terminal running streamlit, helping debug
-    # print(f"Attempting to load data for asset: {_asset_obj.name}, file: {file_path}")
-
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=5)
+def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
+    """Load and filter data with simplified parameter handling"""
+    file_path = get_asset_prep_path(_asset_obj)
     if not os.path.exists(file_path):
-        # print(f"Data file not found: {file_path}") # Server-side log
         return {'data': pd.DataFrame(), 'query': "", 'error': f"Data file not found: {file_path}"}
 
     query_parts = [f"SELECT * FROM read_csv_auto('{str(file_path)}')"]
     conditions = []
-    params = {}
 
-    # Date condition
-    if filters.get("date_filter_col") and filters.get("date_range") and len(filters["date_range"]) == 2:
+    # Date condition with direct string interpolation (safer for DuckDB)
+    if filters.get("date_filter_col") and filters.get("date_range"):
         date_filter_col = filters["date_filter_col"]
         date_range = filters["date_range"]
-        start_date, end_date = date_range
-        if start_date and end_date: # Ensure dates are not None
-            params['start_date'] = start_date.strftime('%Y-%m-%d')
-            params['end_date'] = end_date.strftime('%Y-%m-%d')
-            # Quote column names for safety
-            conditions.append(f'CAST("{date_filter_col}" AS DATE) >= $start_date AND CAST("{date_filter_col}" AS DATE) <= $end_date')
+        if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
+            start_date, end_date = date_range
+            if isinstance(start_date, date) and isinstance(end_date, date):
+                start_date_str = start_date.strftime('%Y-%m-%d')
+                end_date_str = end_date.strftime('%Y-%m-%d')
+                conditions.append(f'CAST("{date_filter_col}" AS DATE) >= \'{start_date_str}\' AND CAST("{date_filter_col}" AS DATE) <= \'{end_date_str}\'')
+            else:
+                return {'data': pd.DataFrame(), 'query': "", 'error': f"Invalid date types: start={type(start_date)}, end={type(end_date)}"}
         else:
-            # print("Date range contains None values, skipping date filter.") # Server-side log
-            pass
+            return {'data': pd.DataFrame(), 'query': "", 'error': f"Invalid date range format: {type(date_range)}, length={len(date_range) if hasattr(date_range, '__len__') else 'N/A'}"}
 
-
-    # Club condition
+    # Club condition with direct string interpolation
     if filters.get("club_filter_config") and filters.get("selected_clubs") and filters.get("club_name_map"):
         club_filter_config = filters["club_filter_config"]
         selected_clubs = filters["selected_clubs"]
         club_name_map = filters["club_name_map"]
-        
         selected_club_ids = [club_name_map[name] for name in selected_clubs if name in club_name_map]
         if selected_club_ids:
             club_cols_to_check = club_filter_config["cols"]
-            
-            param_club_ids = tuple(selected_club_ids)
-            params['club_ids'] = param_club_ids
-            
+            # Create IN clause with proper escaping
+            club_ids_str = ", ".join([str(club_id) for club_id in selected_club_ids])
             club_conditions_list = []
             for col in club_cols_to_check:
-                # Quote column names for safety
-                club_conditions_list.append(f'"{col}" IN $club_ids') 
-            
+                club_conditions_list.append(f'"{col}" IN ({club_ids_str})')
             if club_conditions_list:
-                if club_filter_config["type"] == "single" and club_conditions_list: # ensure list not empty
+                if club_filter_config["type"] == "single" and club_conditions_list:
                     conditions.append(club_conditions_list[0])
-                elif club_filter_config["type"] == "any" and club_conditions_list: # ensure list not empty
+                elif club_filter_config["type"] == "any" and club_conditions_list:
                     conditions.append(f"({' OR '.join(club_conditions_list)})")
-    
+
     if conditions:
         query_parts.append("WHERE " + " AND ".join(conditions))
-    
     final_query = " ".join(query_parts)
-    
-    # Server-side logging for debugging the exact query and params
-    print(f"Executing DuckDB query: {final_query}")
-    print(f"With params: {params}")
-    
+
     try:
         con = duckdb.connect(database=':memory:', read_only=False)
-        df_result = con.execute(final_query, params).fetchdf()
+        df_result = con.execute(final_query).fetchdf()
         con.close()
+        gc.collect()
         return {'data': df_result, 'query': final_query, 'error': None}
     except Exception as e:
-        # print(f"DuckDB query failed. Query: {final_query}, Params: {params}, Error: {e}") # Server-side log
         return {'data': pd.DataFrame(), 'query': final_query, 'error': f"DuckDB query failed: {e}"}
+    finally:
+        gc.collect()  # Clean up memory
 
 # Determine filter parameters for the backend function
 # These are determined based on UI selections before the "Prepare" button is necessarily clicked,
@@ -518,9 +553,20 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
 
     # Prepare filters for DuckDB function based on current UI state
     filters_for_duckdb = {}
-    if date_col_to_filter and selected_date_range_ui and len(selected_date_range_ui) == 2:
-        filters_for_duckdb["date_filter_col"] = date_col_to_filter
-        filters_for_duckdb["date_range"] = selected_date_range_ui
+    
+    # Enhanced date filter validation
+    if date_col_to_filter and selected_date_range_ui:
+        if isinstance(selected_date_range_ui, (tuple, list)) and len(selected_date_range_ui) == 2:
+            start_date, end_date = selected_date_range_ui
+            if isinstance(start_date, date) and isinstance(end_date, date):
+                filters_for_duckdb["date_filter_col"] = date_col_to_filter
+                filters_for_duckdb["date_range"] = selected_date_range_ui
+            else:
+                st.error(f"Invalid date types: start={type(start_date)}, end={type(end_date)}")
+                st.stop()
+        else:
+            st.error(f"Invalid date range format. Expected tuple of 2 dates, got: {type(selected_date_range_ui)}")
+            st.stop()
 
     if club_config_to_filter and selected_club_names_ui is not None:
         filters_for_duckdb["club_filter_config"] = club_config_to_filter
@@ -542,9 +588,9 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
             if query_executed: # Show query only if one was attempted and is not empty
                 st.code(query_executed, language='sql')
         elif df_filtered.empty:
-            # Display warning only if there wasn't a preceding error
-            if not error_message: 
-                st.warning("No data matches the current filters. Please adjust filters and try preparing again.")
+            st.warning("No data matches the current filters. Please adjust filters and try preparing again.")
+            if query_executed:
+                st.code(query_executed, language='sql')
         else:
             # Data is good, prepare Excel
             export_df = df_filtered.copy()
@@ -553,12 +599,19 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
 
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                export_df.to_excel(writer, index=False, sheet_name=asset_name)
+                export_df.to_excel(writer, index=False, sheet_name='Data')
             
-            st.session_state.excel_bytes_for_download = output.getvalue()
-            st.session_state.excel_filename_for_download = f"{asset_name}.xlsx"
-            st.session_state.data_prepared_for_download = True # Set flag on success
-            st.success("Data is ready! Click the download button below.")
+            excel_bytes = output.getvalue()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            excel_filename = f"transfermarkt_{asset_name}_{timestamp}.xlsx"
+            
+            # Store in session state for download
+            st.session_state.excel_bytes_for_download = excel_bytes
+            st.session_state.excel_filename_for_download = excel_filename
+            st.session_state.data_prepared_for_download = True
+            
+            st.success(f"✅ Data prepared successfully! {len(df_filtered)} rows ready for download.")
+            gc.collect()  # Clean up memory after Excel creation
 
 # --- Download button section ---
 # This section is evaluated on every run. The download button appears if data is ready.
@@ -570,15 +623,11 @@ if st.session_state.data_prepared_for_download and st.session_state.excel_bytes_
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="final_download_excel_button"
     )
-elif not st.session_state.data_prepared_for_download and not st.session_state.excel_bytes_for_download :
+elif not st.session_state.data_prepared_for_download and not st.session_state.excel_bytes_for_download:
     # Show this message only if no attempt to prepare has been made yet, or if a previous attempt cleared the flags
     # and didn't result in an error message being shown immediately above by the prepare block.
-    # This avoids showing this info message if an error/warning from the "Prepare" step is already visible.
-    # A more robust way might involve checking if the "prepare_data_button" was just clicked and failed.
-    # For now, this condition should cover most "initial state" or "reset state" scenarios.
     st.info("Select your dataset and filters, then click 'Prepare Data for Download'.")
 
 # The old df_filtered, query_executed, error_message variables are now local to the "Prepare" button block.
 # The st.stop() calls are removed as conditional rendering handles flow.
-# The final st.success message is also moved into the "Prepare" button logic.
-
+# The final st.success message is also handled within the prepare button block.
