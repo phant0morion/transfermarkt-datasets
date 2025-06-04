@@ -47,7 +47,7 @@ except Exception as e_gen_import:
 if "global_date_filter" in st.session_state:
     del st.session_state["global_date_filter"]
 
-st.title("⚽ Transfermarkt Database 3")
+st.title("⚽ Transfermarkt Database 6 - FIXED")
 
 st.markdown("""
 Explore the Transfermarkt database, apply filters, and export the results to Excel.
@@ -112,10 +112,10 @@ if missing_assets:
     st.stop()
 
 # --- Enhanced Setup for Filters ---
-# Load clubs data for team filtering
+# Load clubs data for team filtering - LAZY LOADING
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=1)
 def load_club_data(_dataset):
-    """Load club data with robust error handling"""
+    """Load club data with robust error handling - LAZY LOADING"""
     clubs_asset = _dataset.assets.get("cur_clubs")
     clubs_df_local = None
     club_id_to_name_local = {}
@@ -124,6 +124,8 @@ def load_club_data(_dataset):
 
     if clubs_asset:
         try:
+            # LAZY LOADING: Only load clubs data when explicitly needed for filters
+            # This prevents immediate memory usage on app startup
             clubs_asset.load_from_prep() 
             clubs_df_local = clubs_asset.prep_df
             if clubs_df_local is not None and 'club_id' in clubs_df_local.columns and 'name' in clubs_df_local.columns:
@@ -138,12 +140,22 @@ def load_club_data(_dataset):
                 }
 
         except FileNotFoundError as e_fnf_club:
-            st.error("Club data file not found. Please ensure all required data files are available.")
+            st.warning("⚠️ Club data file not found. Club filtering will be disabled.")
         except Exception as e_club:
-            st.error("Could not load club data. Please check the data files and try again.")
+            st.warning("⚠️ Could not load club data. Club filtering will be disabled.")
     return clubs_df_local, club_id_to_name_local, club_name_to_id_local, available_club_names_local
 
-clubs_df, club_id_to_name, club_name_to_id, available_club_names = load_club_data(td)
+# LAZY LOADING: Only load clubs if user wants to use club filters
+# Initialize with empty data initially to prevent immediate loading
+clubs_df, club_id_to_name, club_name_to_id, available_club_names = None, {}, {}, []
+
+# Check if user wants club filtering before loading club data
+load_clubs_for_filtering = st.sidebar.checkbox("🏟️ Enable Club Filtering", 
+    help="Check this to enable filtering by clubs. This will load additional data.")
+
+if load_clubs_for_filtering:
+    with st.spinner("Loading club data for filtering..."):
+        clubs_df, club_id_to_name, club_name_to_id, available_club_names = load_club_data(td)
 
 # --- End Enhanced Setup for Filters ---
 
@@ -358,25 +370,20 @@ start_year_for_leagues = current_year - 20
 # --- End League Filter Setup ---
 
 # --- Global Date Filter Setup ---
-# Initial broad defaults, these will be refined if a date-filterable asset is selected
+# Use broad defaults - do NOT query data files immediately when asset changes
 global_min_val_for_input = datetime(1990, 1, 1).date()
 global_max_val_for_input = datetime.now().date() 
 initial_date_range_value = [global_min_val_for_input, global_max_val_for_input]
-date_filter_label = "Filter by Date" # Generic initial label
 
+# Set date filter label based on asset type without loading data
 if asset_name in date_filterable_assets:
     date_col_for_asset = date_filterable_assets[asset_name]
-    min_date_from_data, max_date_from_data = get_date_range_for_asset(asset, date_col_for_asset)
-
-    if min_date_from_data:
-        global_min_val_for_input = min_date_from_data
-    if max_date_from_data:
-        global_max_val_for_input = max_date_from_data
-    
-    initial_date_range_value = [global_min_val_for_input, global_max_val_for_input]
     date_filter_label = f"Filter by '{FRIENDLY_COLUMN_NAMES.get(date_col_for_asset, date_col_for_asset)}':"
 else:
     date_filter_label = "Date Filter (asset not date-filterable)"
+
+# Note: We deliberately do NOT call get_date_range_for_asset() here 
+# to avoid loading data files immediately when user changes asset selection
 
 # SIMPLIFIED DATE INPUT - Use separate start and end date inputs for reliability
 # This replaces the problematic st.date_input with value as tuple that caused 
@@ -412,36 +419,34 @@ selected_date_range_ui = (start_date_input, end_date_input)
 
 # --- End Global Date Filter Setup ---
 
+# Team (Club) Filter UI - Only available if club filtering is enabled
 selected_club_names_ui = [] # Initialize before use
 
-# Team (Club) Filter UI
-# Dynamically populate club list based on selected leagues
-clubs_for_selection = available_club_names # Default to all clubs (populated from load_club_data)
-
-if selected_league_codes:
-    # Ensure club_id_to_name is populated (it comes from load_club_data)
-    if not club_id_to_name:
-        st.sidebar.warning("Club name mapping is not available. Cannot filter by league teams. Showing all clubs.")
-        clubs_for_selection = available_club_names
-    else:
-        league_specific_clubs = get_club_names_for_leagues(
-            selected_league_codes, 
-            td, 
-            club_id_to_name, 
-            start_year_for_leagues, 
-            current_year
-        )
-        if league_specific_clubs:
-            clubs_for_selection = league_specific_clubs
-        else:
-            st.sidebar.warning("No clubs found for the selected leagues and recent seasons. Showing all available clubs.")
-            clubs_for_selection = available_club_names # Fallback to all if no specific clubs found
-else:
-    clubs_for_selection = available_club_names
-
-if asset_name in team_filterable_assets:
+if load_clubs_for_filtering and asset_name in team_filterable_assets:
     team_filter_config = team_filterable_assets[asset_name]
     filter_key_club = f"club_filter_{asset_name}" # Unique key per asset
+    
+    # Dynamically populate club list based on selected leagues
+    clubs_for_selection = available_club_names # Default to all clubs
+
+    if selected_league_codes:
+        # Ensure club_id_to_name is populated (it comes from load_club_data)
+        if not club_id_to_name:
+            st.sidebar.warning("Club name mapping is not available. Cannot filter by league teams. Showing all clubs.")
+            clubs_for_selection = available_club_names
+        else:
+            league_specific_clubs = get_club_names_for_leagues(
+                selected_league_codes, 
+                td, 
+                club_id_to_name, 
+                start_year_for_leagues, 
+                current_year
+            )
+            if league_specific_clubs:
+                clubs_for_selection = league_specific_clubs
+            else:
+                st.sidebar.warning("No clubs found for the selected leagues and recent seasons. Showing all available clubs.")
+                clubs_for_selection = available_club_names # Fallback to all if no specific clubs found
 
     if clubs_for_selection: # Only show multiselect if there are clubs to select
         selected_club_names_ui = st.sidebar.multiselect(
@@ -452,9 +457,109 @@ if asset_name in team_filterable_assets:
     else:
         st.sidebar.info("No clubs available for filtering for the current selection.")
         selected_club_names_ui = []
+        
+elif asset_name in team_filterable_assets and not load_clubs_for_filtering:
+    st.sidebar.info(f"🏟️ Club filtering available for '{ASSET_DISPLAY_NAMES.get(asset_name, asset_name)}' - enable it above.")
+    selected_club_names_ui = []
 else:
     st.sidebar.info(f"Club filtering not applicable for the '{ASSET_DISPLAY_NAMES.get(asset_name, asset_name)}' dataset.")
     selected_club_names_ui = []
+
+# Function to process data in chunks for memory efficiency
+def process_data_in_chunks(_asset_obj: Asset, filters: dict, chunk_years: int = 5) -> dict:
+    """Process large datasets in year-based chunks to minimize memory usage"""
+    
+    # Check if this is a date-filterable asset with date range
+    if not filters.get("date_filter_col") or not filters.get("date_range"):
+        # If no date filtering, fall back to regular processing with limits
+        return load_data_with_duckdb(_asset_obj, filters)
+    
+    start_date, end_date = filters["date_range"]
+    start_year = start_date.year
+    end_year = end_date.year
+    
+    # If date range is small enough, process normally
+    if (end_year - start_year) <= chunk_years:
+        return load_data_with_duckdb(_asset_obj, filters)
+    
+    # Process in chunks
+    st.info(f"📦 Large date range detected ({start_year}-{end_year}). Processing in {chunk_years}-year chunks for memory efficiency.")
+    
+    all_chunks = []
+    total_rows = 0
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    chunk_start_year = start_year
+    chunk_count = 0
+    total_chunks = ((end_year - start_year) // chunk_years) + 1
+    
+    try:
+        while chunk_start_year <= end_year:
+            chunk_end_year = min(chunk_start_year + chunk_years - 1, end_year)
+            chunk_count += 1
+            
+            status_text.text(f"Processing chunk {chunk_count}/{total_chunks}: {chunk_start_year}-{chunk_end_year}")
+            
+            # Create chunk-specific filters
+            chunk_filters = filters.copy()
+            chunk_start_date = date(chunk_start_year, 1, 1)
+            chunk_end_date = date(chunk_end_year, 12, 31)
+            
+            # Ensure chunk dates don't exceed original range
+            chunk_start_date = max(chunk_start_date, start_date)
+            chunk_end_date = min(chunk_end_date, end_date)
+            
+            chunk_filters["date_range"] = (chunk_start_date, chunk_end_date)
+            
+            # Process this chunk
+            chunk_result = load_data_with_duckdb(_asset_obj, chunk_filters)
+            
+            if chunk_result['error']:
+                return chunk_result  # Return error immediately
+            
+            chunk_data = chunk_result['data']
+            if not chunk_data.empty:
+                all_chunks.append(chunk_data)
+                total_rows += len(chunk_data)
+                
+                # Clear chunk data from memory immediately after appending
+                del chunk_data
+                gc.collect()
+            
+            # Update progress
+            progress_bar.progress(chunk_count / total_chunks)
+            
+            chunk_start_year += chunk_years
+        
+        progress_bar.progress(1.0)
+        status_text.text("Combining chunks...")
+        
+        # Combine all chunks
+        if all_chunks:
+            combined_data = pd.concat(all_chunks, ignore_index=True)
+            # Clear chunk list from memory
+            del all_chunks
+            gc.collect()
+            
+            status_text.text(f"✅ Processed {total_rows:,} rows across {chunk_count} chunks")
+            return {'data': combined_data, 'query': f"Chunked processing ({chunk_count} chunks)", 'error': None, 'total_rows_available': total_rows}
+        else:
+            status_text.text("No data found in any chunks")
+            return {'data': pd.DataFrame(), 'query': "Chunked processing (no data)", 'error': None, 'total_rows_available': 0}
+            
+    except Exception as e:
+        status_text.text(f"❌ Error during chunked processing: {str(e)}")
+        # Clean up any remaining chunks
+        if 'all_chunks' in locals():
+            del all_chunks
+        gc.collect()
+        return {'data': pd.DataFrame(), 'query': "Chunked processing (failed)", 'error': f"Chunked processing failed: {str(e)}", 'total_rows_available': 0}
+    
+    finally:
+        # Always clean up
+        gc.collect()
 
 # Function to load and filter data using DuckDB
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=5)

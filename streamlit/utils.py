@@ -149,10 +149,11 @@ def load_td():
             assets_relative_path="transfermarkt_datasets/assets"
         )
         
-        # Load assets
-        td.load_assets()
+        # DO NOT load assets immediately - this causes memory issues
+        # Assets will be loaded on-demand when user requests data
+        # td.load_assets()  # REMOVED: This was loading all CSV files into memory
         
-        # Verify key assets are available
+        # Verify key assets are available (just check they exist in the registry)
         if not td.assets:
             st.error("❌ No assets found in the dataset")
             st.stop()

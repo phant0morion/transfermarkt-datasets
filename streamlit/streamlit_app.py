@@ -37,7 +37,7 @@ try:
     # Check if this is a cloud environment health check
     if os.environ.get('STREAMLIT_SERVER_HEADLESS', '').lower() == 'true':
         # Show immediate content for cloud health checks
-        st.title("⚽ Transfermarkt Database")
+        st.title("⚽ Transfermarkt Database 6 - FIXED")
         st.success("✅ Application ready")
         
         # Add quick status info
@@ -60,7 +60,7 @@ except Exception:
     st.stop()
 
 # For local development, show main content
-st.title("⚽ Transfermarkt Database")
+st.title("⚽ Transfermarkt Database 6 - FIXED")
 st.success("✅ Application ready")
 
 col1, col2, col3 = st.columns(3)
