@@ -61,7 +61,7 @@ except Exception as e_gen_import:
 if "global_date_filter" in st.session_state:
     del st.session_state["global_date_filter"]
 
-st.title("⚽ Transfermarkt Database")
+st.title("⚽ Transfermarkt Database 1")
 
 st.markdown("""
 Explore the Transfermarkt database, apply filters, and export the results to Excel.
@@ -473,11 +473,14 @@ else:
 # Function to load and filter data using DuckDB
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=5)
 def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
-    """Load and filter data with simplified parameter handling"""
+    """Load and filter data with simplified parameter handling and memory management"""
     file_path = get_asset_prep_path(_asset_obj)
     if not os.path.exists(file_path):
-        return {'data': pd.DataFrame(), 'query': "", 'error': f"Data file not found: {file_path}"}
+        return {'data': pd.DataFrame(), 'query': "", 'error': f"Data file not found: {file_path}", 'row_count': 0}
 
+    # Add row limit for Streamlit Cloud safety
+    MAX_ROWS = 100000  # Limit to 100k rows to prevent memory issues
+    
     query_parts = [f"SELECT * FROM read_csv_auto('{str(file_path)}')"]
     conditions = []
 
@@ -492,9 +495,9 @@ def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
                 end_date_str = end_date.strftime('%Y-%m-%d')
                 conditions.append(f'CAST("{date_filter_col}" AS DATE) >= \'{start_date_str}\' AND CAST("{date_filter_col}" AS DATE) <= \'{end_date_str}\'')
             else:
-                return {'data': pd.DataFrame(), 'query': "", 'error': f"Invalid date types: start={type(start_date)}, end={type(end_date)}"}
+                return {'data': pd.DataFrame(), 'query': "", 'error': f"Invalid date types: start={type(start_date)}, end={type(end_date)}", 'row_count': 0}
         else:
-            return {'data': pd.DataFrame(), 'query': "", 'error': f"Invalid date range format: {type(date_range)}, length={len(date_range) if hasattr(date_range, '__len__') else 'N/A'}"}
+            return {'data': pd.DataFrame(), 'query': "", 'error': f"Invalid date range format: {type(date_range)}, length={len(date_range) if hasattr(date_range, '__len__') else 'N/A'}", 'row_count': 0}
 
     # Club condition with direct string interpolation
     if filters.get("club_filter_config") and filters.get("selected_clubs") and filters.get("club_name_map"):
