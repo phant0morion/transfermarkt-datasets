@@ -517,16 +517,32 @@ def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
 
     if conditions:
         query_parts.append("WHERE " + " AND ".join(conditions))
+    
+    # Add LIMIT to prevent memory issues in cloud environments
+    # First, let's check if we need to limit the results
+    count_query = f"SELECT COUNT(*) as row_count FROM ({' '.join(query_parts)})"
     final_query = " ".join(query_parts)
 
     try:
         con = duckdb.connect(database=':memory:', read_only=False)
+        
+        # Check row count first to prevent memory issues
+        count_result = con.execute(count_query).fetchdf()
+        row_count = count_result['row_count'].iloc[0] if not count_result.empty else 0
+        
+        # Limit rows for Streamlit Cloud stability (will be further limited in UI if needed)
+        MAX_QUERY_ROWS = 200000  # Conservative limit for query
+        if row_count > MAX_QUERY_ROWS:
+            final_query += f" LIMIT {MAX_QUERY_ROWS}"
+            
         df_result = con.execute(final_query).fetchdf()
         con.close()
         gc.collect()
-        return {'data': df_result, 'query': final_query, 'error': None}
+        return {'data': df_result, 'query': final_query, 'error': None, 'total_rows_available': row_count}
     except Exception as e:
-        return {'data': pd.DataFrame(), 'query': final_query, 'error': f"DuckDB query failed: {e}"}
+        if 'con' in locals():
+            con.close()
+        return {'data': pd.DataFrame(), 'query': final_query, 'error': f"DuckDB query failed: {e}", 'total_rows_available': 0}
     finally:
         gc.collect()  # Clean up memory
 
@@ -550,6 +566,9 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
     st.session_state.data_prepared_for_download = False
     st.session_state.excel_bytes_for_download = None
     st.session_state.excel_filename_for_download = ""
+    
+    # Force garbage collection before starting
+    gc.collect()
 
     # Prepare filters for DuckDB function based on current UI state
     filters_for_duckdb = {}
@@ -582,6 +601,7 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
         df_filtered = result_info['data']
         query_executed = result_info['query']
         error_message = result_info['error']
+        total_rows_available = result_info.get('total_rows_available', len(df_filtered))
 
         if error_message:
             st.error(error_message)
@@ -592,42 +612,101 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
             if query_executed:
                 st.code(query_executed, language='sql')
         else:
-            # Data is good, prepare Excel
-            export_df = df_filtered.copy()
-            friendly_export_df_columns = [FRIENDLY_COLUMN_NAMES.get(col, col) for col in export_df.columns]
-            export_df.columns = friendly_export_df_columns
+            # Show info about data availability
+            if total_rows_available > len(df_filtered):
+                st.info(f"ℹ️ Found {total_rows_available:,} total rows, but limiting query to {len(df_filtered):,} rows for performance.")
+            
+            # Check data size to prevent memory issues in Streamlit Cloud
+            num_rows = len(df_filtered)
+            num_cols = len(df_filtered.columns)
+            estimated_size_mb = (num_rows * num_cols * 8) / (1024 * 1024)  # Rough estimate
+            
+            # Limit data size for Streamlit Cloud stability
+            MAX_ROWS_CLOUD = 100000  # Limit to 100k rows for stability
+            if num_rows > MAX_ROWS_CLOUD:
+                st.warning(f"⚠️ Dataset is large ({num_rows:,} rows). For stability, limiting export to first {MAX_ROWS_CLOUD:,} rows.")
+                df_filtered = df_filtered.head(MAX_ROWS_CLOUD)
+                num_rows = len(df_filtered)
+            
+            st.info(f"📊 Preparing {num_rows:,} rows × {num_cols} columns (est. {estimated_size_mb:.1f} MB)")
+            
+            try:
+                # Data is good, prepare Excel with memory management
+                export_df = df_filtered.copy()
+                friendly_export_df_columns = [FRIENDLY_COLUMN_NAMES.get(col, col) for col in export_df.columns]
+                export_df.columns = friendly_export_df_columns
 
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                export_df.to_excel(writer, index=False, sheet_name='Data')
-            
-            excel_bytes = output.getvalue()
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            excel_filename = f"transfermarkt_{asset_name}_{timestamp}.xlsx"
-            
-            # Store in session state for download
-            st.session_state.excel_bytes_for_download = excel_bytes
-            st.session_state.excel_filename_for_download = excel_filename
-            st.session_state.data_prepared_for_download = True
-            
-            st.success(f"✅ Data prepared successfully! {len(df_filtered)} rows ready for download.")
-            gc.collect()  # Clean up memory after Excel creation
+                # Use memory-efficient Excel creation
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl', options={'remove_timezone': True}) as writer:
+                    export_df.to_excel(writer, index=False, sheet_name='Data')
+                
+                excel_bytes = output.getvalue()
+                output.close()  # Explicitly close BytesIO
+                
+                # Clean up intermediate dataframes
+                del export_df
+                del df_filtered
+                gc.collect()
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                excel_filename = f"transfermarkt_{asset_name}_{timestamp}.xlsx"
+                
+                # Store in session state for download
+                st.session_state.excel_bytes_for_download = excel_bytes
+                st.session_state.excel_filename_for_download = excel_filename
+                st.session_state.data_prepared_for_download = True
+                
+                excel_size_mb = len(excel_bytes) / (1024 * 1024)
+                st.success(f"✅ Data prepared successfully! {num_rows:,} rows ready for download (Excel file: {excel_size_mb:.1f} MB)")
+                
+            except MemoryError:
+                st.error("❌ Not enough memory to create Excel file. Try reducing the date range or applying more filters.")
+                gc.collect()
+            except Exception as e:
+                st.error(f"❌ Error creating Excel file: {str(e)}")
+                gc.collect()
+            finally:
+                # Always clean up memory
+                gc.collect()
 
 # --- Download button section ---
 # This section is evaluated on every run. The download button appears if data is ready.
 if st.session_state.data_prepared_for_download and st.session_state.excel_bytes_for_download:
-    st.download_button(
-        label="Download Excel File",
-        data=st.session_state.excel_bytes_for_download,
-        file_name=st.session_state.excel_filename_for_download,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="final_download_excel_button"
-    )
+    try:
+        excel_size_mb = len(st.session_state.excel_bytes_for_download) / (1024 * 1024)
+        st.download_button(
+            label=f"📥 Download Excel File ({excel_size_mb:.1f} MB)",
+            data=st.session_state.excel_bytes_for_download,
+            file_name=st.session_state.excel_filename_for_download,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="final_download_excel_button",
+            help="Click to download the prepared Excel file"
+        )
+        
+        # Add a button to clear the prepared data to free memory
+        if st.button("🗑️ Clear Prepared Data", help="Free up memory by clearing the prepared Excel file"):
+            st.session_state.data_prepared_for_download = False
+            st.session_state.excel_bytes_for_download = None
+            st.session_state.excel_filename_for_download = ""
+            gc.collect()
+            st.success("✅ Prepared data cleared. Memory freed up.")
+            st.rerun()
+            
+    except Exception as e:
+        st.error(f"❌ Error with download: {str(e)}")
+        # Clear corrupted data
+        st.session_state.data_prepared_for_download = False
+        st.session_state.excel_bytes_for_download = None
+        st.session_state.excel_filename_for_download = ""
+        gc.collect()
+        
 elif not st.session_state.data_prepared_for_download and not st.session_state.excel_bytes_for_download:
-    # Show this message only if no attempt to prepare has been made yet, or if a previous attempt cleared the flags
-    # and didn't result in an error message being shown immediately above by the prepare block.
     st.info("Select your dataset and filters, then click 'Prepare Data for Download'.")
 
-# The old df_filtered, query_executed, error_message variables are now local to the "Prepare" button block.
-# The st.stop() calls are removed as conditional rendering handles flow.
-# The final st.success message is also handled within the prepare button block.
+# Clean up memory periodically
+if 'cleanup_counter' not in st.session_state:
+    st.session_state.cleanup_counter = 0
+st.session_state.cleanup_counter += 1
+if st.session_state.cleanup_counter % 10 == 0:  # Every 10 page loads
+    gc.collect()
