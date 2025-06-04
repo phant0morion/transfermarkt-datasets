@@ -239,3 +239,4 @@ Contributions to `transfermarkt-datasets` are most welcome. If you want to contr
 5. If it's all looking good, create a pull request with your changes :rocket:
 
 > ℹ️ In case you face any issue following the instructions above please [get in touch](#-getting-in-touch)
+# Force redeploy
