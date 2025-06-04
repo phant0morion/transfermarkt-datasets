@@ -479,7 +479,7 @@ def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
         return {'data': pd.DataFrame(), 'query': "", 'error': f"Data file not found: {file_path}", 'row_count': 0}
 
     # Add row limit for Streamlit Cloud safety
-    MAX_ROWS = 100000  # Limit to 100k rows to prevent memory issues
+    MAX_ROWS = 50000  # Limit to 50k rows to prevent memory issues in cloud
     
     query_parts = [f"SELECT * FROM read_csv_auto('{str(file_path)}')"]
     conditions = []
@@ -625,7 +625,7 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
             estimated_size_mb = (num_rows * num_cols * 8) / (1024 * 1024)  # Rough estimate
             
             # Limit data size for Streamlit Cloud stability
-            MAX_ROWS_CLOUD = 100000  # Limit to 100k rows for stability
+            MAX_ROWS_CLOUD = 50000  # Limit to 50k rows for stability
             if num_rows > MAX_ROWS_CLOUD:
                 st.warning(f"⚠️ Dataset is large ({num_rows:,} rows). For stability, limiting export to first {MAX_ROWS_CLOUD:,} rows.")
                 df_filtered = df_filtered.head(MAX_ROWS_CLOUD)
@@ -647,21 +647,29 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
                 excel_bytes = output.getvalue()
                 output.close()  # Explicitly close BytesIO
                 
-                # Clean up intermediate dataframes
-                del export_df
-                del df_filtered
-                gc.collect()
-                
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                excel_filename = f"transfermarkt_{asset_name}_{timestamp}.xlsx"
-                
-                # Store in session state for download
-                st.session_state.excel_bytes_for_download = excel_bytes
-                st.session_state.excel_filename_for_download = excel_filename
-                st.session_state.data_prepared_for_download = True
-                
+                # Check file size before storing in session state
                 excel_size_mb = len(excel_bytes) / (1024 * 1024)
-                st.success(f"✅ Data prepared successfully! {num_rows:,} rows ready for download (Excel file: {excel_size_mb:.1f} MB)")
+                MAX_FILE_SIZE_MB = 100  # Maximum file size for Streamlit Cloud
+                
+                if excel_size_mb > MAX_FILE_SIZE_MB:
+                    del excel_bytes
+                    gc.collect()
+                    st.error(f"❌ Generated file is too large ({excel_size_mb:.1f} MB). Maximum allowed: {MAX_FILE_SIZE_MB} MB. Please apply more filters to reduce data size.")
+                else:
+                    # Clean up intermediate dataframes
+                    del export_df
+                    del df_filtered
+                    gc.collect()
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    excel_filename = f"transfermarkt_{asset_name}_{timestamp}.xlsx"
+                    
+                    # Store in session state for download
+                    st.session_state.excel_bytes_for_download = excel_bytes
+                    st.session_state.excel_filename_for_download = excel_filename
+                    st.session_state.data_prepared_for_download = True
+                    
+                    st.success(f"✅ Data prepared successfully! {num_rows:,} rows ready for download (Excel file: {excel_size_mb:.1f} MB)")
                 
             except MemoryError:
                 st.error("❌ Not enough memory to create Excel file. Try reducing the date range or applying more filters.")
