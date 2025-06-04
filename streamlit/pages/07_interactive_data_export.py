@@ -47,7 +47,7 @@ except Exception as e_gen_import:
 if "global_date_filter" in st.session_state:
     del st.session_state["global_date_filter"]
 
-st.title("⚽ Transfermarkt Database 6 - FIXED")
+st.title("⚽ Transfermarkt Database 7 - EXCEL FIXED")
 
 st.markdown("""
 Explore the Transfermarkt database, apply filters, and export the results to Excel.
@@ -787,7 +787,7 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
 
                 # Use memory-efficient Excel creation
                 output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl', options={'remove_timezone': True}) as writer:
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     export_df.to_excel(writer, index=False, sheet_name='Data')
                 
                 excel_bytes = output.getvalue()
