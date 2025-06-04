@@ -47,7 +47,7 @@ except Exception as e_gen_import:
 if "global_date_filter" in st.session_state:
     del st.session_state["global_date_filter"]
 
-st.title("⚽ Transfermarkt Database 2")
+st.title("⚽ Transfermarkt Database 3")
 
 st.markdown("""
 Explore the Transfermarkt database, apply filters, and export the results to Excel.
@@ -464,8 +464,25 @@ def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
     if not os.path.exists(file_path):
         return {'data': pd.DataFrame(), 'query': "", 'error': f"Data file not found: {file_path}", 'row_count': 0}
 
-    # Add row limit for Streamlit Cloud safety
-    MAX_ROWS = 50000  # Limit to 50k rows to prevent memory issues in cloud
+    # Check file size before attempting to load
+    try:
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if file_size_mb > 10:  # If file is larger than 10MB, be extra cautious
+            st.warning(f"⚠️ Large data file detected ({file_size_mb:.1f} MB). Processing with conservative limits.")
+    except:
+        pass  # Continue if we can't check file size
+
+    # Dataset-specific memory limits for Streamlit Cloud safety
+    asset_name = getattr(_asset_obj, 'name', 'unknown')
+    DATASET_LIMITS = {
+        'cur_transfers': 25000,  # Transfers dataset is large, be very conservative
+        'cur_player_valuations': 25000,  # Valuations can be large too
+        'cur_appearances': 30000,  # Appearances can be very large
+        'default': 50000  # Default limit for other datasets
+    }
+    
+    MAX_ROWS = DATASET_LIMITS.get(asset_name, DATASET_LIMITS['default'])
+    st.info(f"ℹ️ Using conservative limit of {MAX_ROWS:,} rows for {asset_name} dataset to ensure stability.")
     
     query_parts = [f"SELECT * FROM read_csv_auto('{str(file_path)}')"]
     conditions = []
@@ -519,8 +536,12 @@ def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
         count_result = con.execute(count_query).fetchdf()
         row_count = count_result['row_count'].iloc[0] if not count_result.empty else 0
         
-        # Limit rows for Streamlit Cloud stability (will be further limited in UI if needed)
-        MAX_QUERY_ROWS = 200000  # Conservative limit for query
+        # More aggressive limits for known large datasets
+        if asset_name in ['cur_transfers', 'cur_appearances', 'cur_player_valuations']:
+            MAX_QUERY_ROWS = 100000  # Even more conservative for large datasets
+        else:
+            MAX_QUERY_ROWS = 200000  # Standard limit for other datasets
+            
         if row_count > MAX_QUERY_ROWS:
             final_query += f" LIMIT {MAX_QUERY_ROWS}"
             
@@ -528,10 +549,23 @@ def load_data_with_duckdb(_asset_obj: Asset, filters: dict) -> dict:
         con.close()
         gc.collect()
         return {'data': df_result, 'query': final_query, 'error': None, 'total_rows_available': row_count}
+    
+    except MemoryError as e:
+        if 'con' in locals():
+            con.close()
+        gc.collect()
+        return {'data': pd.DataFrame(), 'query': final_query, 'error': f"Memory error: Dataset too large for available memory. Try applying more filters to reduce data size.", 'total_rows_available': 0}
+    
     except Exception as e:
         if 'con' in locals():
             con.close()
-        return {'data': pd.DataFrame(), 'query': final_query, 'error': f"DuckDB query failed: {e}", 'total_rows_available': 0}
+        gc.collect()
+        error_msg = str(e)
+        if 'memory' in error_msg.lower() or 'out of memory' in error_msg.lower():
+            return {'data': pd.DataFrame(), 'query': final_query, 'error': f"Memory constraint: {error_msg}. Try applying filters to reduce dataset size.", 'total_rows_available': 0}
+        else:
+            return {'data': pd.DataFrame(), 'query': final_query, 'error': f"Query failed: {error_msg}", 'total_rows_available': 0}
+    
     finally:
         gc.collect()  # Clean up memory
 
@@ -581,11 +615,25 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
         filters_for_duckdb["selected_clubs"] = selected_club_names_ui
         filters_for_duckdb["club_name_map"] = club_name_to_id
 
+    # Pre-check for large datasets to warn users
+    LARGE_DATASETS = ['cur_transfers', 'cur_appearances', 'cur_player_valuations']
+    if asset_name in LARGE_DATASETS and not filters_for_duckdb.get("date_filter_col") and not filters_for_duckdb.get("selected_clubs"):
+        st.warning(f"⚠️ {asset_name} is a large dataset. For better performance and stability, consider applying date or club filters before preparing data.")
+        if not st.checkbox(f"I understand - proceed with {asset_name} anyway", key=f"proceed_{asset_name}"):
+            st.info("Apply some filters above and try again, or check the box to proceed without filters.")
+            st.stop()
+
     with st.spinner("Preparing data... This may take a moment."):
-        result_info = load_data_with_duckdb(
-            asset, 
-            filters_for_duckdb
-        )
+        try:
+            result_info = load_data_with_duckdb(
+                asset, 
+                filters_for_duckdb
+            )
+        except Exception as e:
+            st.error(f"❌ Error loading data: {str(e)}")
+            st.info("This might be due to memory constraints. Try applying more filters to reduce the dataset size.")
+            gc.collect()
+            st.stop()
 
         df_filtered = result_info['data']
         query_executed = result_info['query']
@@ -610,10 +658,17 @@ if st.button("Prepare Data for Download", key="prepare_data_button"):
             num_cols = len(df_filtered.columns)
             estimated_size_mb = (num_rows * num_cols * 8) / (1024 * 1024)  # Rough estimate
             
-            # Limit data size for Streamlit Cloud stability
-            MAX_ROWS_CLOUD = 50000  # Limit to 50k rows for stability
+            # Dataset-specific export limits for Streamlit Cloud stability
+            EXPORT_LIMITS = {
+                'cur_transfers': 20000,  # Very conservative for transfers
+                'cur_player_valuations': 20000,  # Conservative for valuations
+                'cur_appearances': 25000,  # Conservative for appearances
+                'default': 40000  # Default limit reduced from 50k
+            }
+            
+            MAX_ROWS_CLOUD = EXPORT_LIMITS.get(asset_name, EXPORT_LIMITS['default'])
             if num_rows > MAX_ROWS_CLOUD:
-                st.warning(f"⚠️ Dataset is large ({num_rows:,} rows). For stability, limiting export to first {MAX_ROWS_CLOUD:,} rows.")
+                st.warning(f"⚠️ Dataset is large ({num_rows:,} rows). For stability, limiting export to first {MAX_ROWS_CLOUD:,} rows for {asset_name}.")
                 df_filtered = df_filtered.head(MAX_ROWS_CLOUD)
                 num_rows = len(df_filtered)
             
