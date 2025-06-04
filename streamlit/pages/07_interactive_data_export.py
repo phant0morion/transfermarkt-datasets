@@ -47,7 +47,7 @@ except Exception as e_gen_import:
 if "global_date_filter" in st.session_state:
     del st.session_state["global_date_filter"]
 
-st.title("⚽ Transfermarkt Database 1")
+st.title("⚽ Transfermarkt Database 2")
 
 st.markdown("""
 Explore the Transfermarkt database, apply filters, and export the results to Excel.
