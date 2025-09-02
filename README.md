@@ -213,10 +213,24 @@ The data pipeline is orchestrated as a series of Github Actions workflows. They 
 | `build`*                  | Every push to the `master` branch or to an open pull request | It runs the [data preparation](#-data-preparation) step, and tests and commits a new version of the prepared data if there are any changes |
 | `acquire-<acquirer>.yml` | Schedule                                                     | It runs the acquirer and commits the acquired data to the corresponding raw location                                                                      |
 | `sync-<frontend>.yml`    | Every change on prepared data                                | It syncs the prepared data to the corresponding frontend                                                                                |
+| `sync-upstream.yml`      | Daily schedule and manual trigger                            | **Fork-specific**: Keeps the fork synchronized with the upstream repository, including both code changes and DVC-managed data files |
 
 *`build-contribution` is the same as `build` but without commiting any data.
 
 > 💡 Debugging workflows remotelly is a pain. I recommend using [act](https://github.com/nektos/act) to run them locally to the extent that is possible.
+
+## 🔄 fork maintenance
+
+If you are working with a fork of this repository, the `sync-upstream.yml` workflow automatically keeps your fork synchronized with the upstream repository. This workflow:
+
+1. **Adds upstream remote**: Automatically configures the upstream repository as a remote source
+2. **Fetches latest changes**: Retrieves new commits and updates from the upstream repository
+3. **Merges changes**: Integrates upstream changes into your fork's master branch
+4. **Syncs DVC data**: Pulls the latest dataset files using DVC to ensure your fork has access to the most recent data
+
+The sync runs automatically daily at 6:00 AM UTC, but can also be triggered manually via the GitHub Actions interface. This ensures your fork always has the latest code improvements and dataset updates from the main repository.
+
+> ⚠️ **Note**: If merge conflicts occur during the sync process, the workflow will fail and require manual resolution. Monitor the workflow runs to ensure successful synchronization.
 
 ## 💬 community
 

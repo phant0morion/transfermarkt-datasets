@@ -1,0 +1,143 @@
+name: sync-upstream
+
+"on":
+  # Run daily at 6 AM UTC to sync with upstream
+  schedule:
+    - cron: '0 6 * * *'
+  # Allow manual triggering
+  workflow_dispatch: {}
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    container:
+      image: dcaribou/transfermarkt-datasets:linux-amd64-master
+    defaults:
+      run:
+        shell: bash -l {0}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PA_GITHUB_TOKEN }}
+          fetch-depth: 0  # Fetch full history for proper merging
+      
+      - name: Configure git
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Add upstream remote
+        run: |
+          # Check if upstream remote exists
+          if ! git remote | grep -q '^upstream$'; then
+            echo "Adding upstream remote..."
+            git remote add upstream https://github.com/dcaribou/transfermarkt-datasets.git
+          else
+            echo "Upstream remote already exists"
+          fi
+          
+          # Verify remotes
+          echo "Current remotes:"
+          git remote -v
+      
+      - name: Fetch upstream changes
+        run: |
+          echo "Fetching upstream changes..."
+          git fetch upstream
+          
+          # Show what we fetched
+          echo "Upstream branches:"
+          git branch -r | grep upstream
+      
+      - name: Check for upstream changes
+        id: check-changes
+        run: |
+          # Get current branch
+          CURRENT_BRANCH=$(git branch --show-current)
+          echo "current_branch=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
+          
+          # Check if there are new commits in upstream
+          UPSTREAM_COMMITS=$(git rev-list --count HEAD..upstream/master 2>/dev/null || echo "0")
+          echo "upstream_commits=$UPSTREAM_COMMITS" >> $GITHUB_OUTPUT
+          
+          echo "Current branch: $CURRENT_BRANCH"
+          echo "Upstream commits ahead: $UPSTREAM_COMMITS"
+          
+          if [ "$UPSTREAM_COMMITS" -gt 0 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Found $UPSTREAM_COMMITS new commits in upstream"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No new commits in upstream"
+          fi
+      
+      - name: Merge upstream changes
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          echo "Merging upstream changes..."
+          
+          # Switch to master branch if not already there
+          if [ "$(git branch --show-current)" != "master" ]; then
+            git checkout master
+          fi
+          
+          # Merge upstream/master into current branch
+          if git merge upstream/master --no-edit; then
+            echo "Successfully merged upstream changes"
+          else
+            echo "Merge conflict detected. Manual intervention required."
+            echo "Conflicts in the following files:"
+            git status --porcelain | grep "^UU" || true
+            exit 1
+          fi
+      
+      - name: Pull latest DVC data
+        if: steps.check-changes.outputs.has_changes == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          echo "Pulling latest DVC data..."
+          
+          # Pull data from remote storage
+          if dvc pull; then
+            echo "Successfully pulled DVC data"
+          else
+            echo "Warning: DVC pull had issues, but continuing..."
+            # Don't fail the workflow if DVC pull has minor issues
+          fi
+          
+          # Show DVC status
+          echo "DVC status:"
+          dvc status || true
+      
+      - name: Commit DVC changes
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          # Check if there are any DVC-related changes to commit
+          if ! git diff --quiet --exit-code; then
+            echo "Committing DVC changes..."
+            git add .
+            git commit -m "🤖 sync upstream: update DVC data references" || echo "No changes to commit"
+          else
+            echo "No DVC changes to commit"
+          fi
+      
+      - name: Push changes
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          echo "Pushing changes to origin..."
+          git push origin master
+      
+      - name: Summary
+        run: |
+          if [ "${{ steps.check-changes.outputs.has_changes }}" == "true" ]; then
+            echo "✅ Successfully synchronized with upstream repository"
+            echo "🔄 Merged ${{ steps.check-changes.outputs.upstream_commits }} commits"
+            echo "📥 Updated DVC data references"
+          else
+            echo "ℹ️ Repository is already up-to-date with upstream"
+          fi
