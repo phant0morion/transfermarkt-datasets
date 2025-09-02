@@ -59,11 +59,24 @@ jobs:
           CURRENT_BRANCH=$(git branch --show-current)
           echo "current_branch=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
           
+          # Ensure we're working with master branch
+          if [ "$CURRENT_BRANCH" != "master" ]; then
+            echo "Not on master branch. Checking if master exists..."
+            if git show-ref --verify --quiet refs/heads/master; then
+              echo "Switching to existing master branch"
+              git checkout master
+            else
+              echo "Creating master branch from upstream/master"
+              git checkout -b master upstream/master
+              git push -u origin master
+            fi
+          fi
+          
           # Check if there are new commits in upstream
           UPSTREAM_COMMITS=$(git rev-list --count HEAD..upstream/master 2>/dev/null || echo "0")
           echo "upstream_commits=$UPSTREAM_COMMITS" >> $GITHUB_OUTPUT
           
-          echo "Current branch: $CURRENT_BRANCH"
+          echo "Current branch: $(git branch --show-current)"
           echo "Upstream commits ahead: $UPSTREAM_COMMITS"
           
           if [ "$UPSTREAM_COMMITS" -gt 0 ]; then
@@ -79,10 +92,8 @@ jobs:
         run: |
           echo "Merging upstream changes..."
           
-          # Switch to master branch if not already there
-          if [ "$(git branch --show-current)" != "master" ]; then
-            git checkout master
-          fi
+          # Ensure we're on master
+          git checkout master
           
           # Merge upstream/master into current branch
           if git merge upstream/master --no-edit; then
